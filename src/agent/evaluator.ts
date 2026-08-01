@@ -117,12 +117,9 @@ export function evaluate(input: EvaluationInput): Evaluation {
   const keep = BigInt(Math.round((1 - payoutModel.creatorHaircut) * 1e6));
   const distributable = (afterRefund * keep) / 1_000_000n;
 
-  const redeemableAfter = supplyAfter - state.creatorSharesPerOutcome;
-  const perShare = payoutPerShare(
-    distributable,
-    supplyAfter,
-    state.creatorSharesPerOutcome,
-  );
+  // `state.pool` is a live, pre-settlement pool, so the simple ratio is the
+  // exact law here. Subtracting creator shares as well would double-count them.
+  const perShare = payoutPerShare(distributable, supplyAfter);
   const grossIfWinRaw = (perShare * sharesOut) / SHARE_SCALE;
 
   // If the market never resolves, holders recover pro-rata across all outcomes.
@@ -168,8 +165,8 @@ export function evaluate(input: EvaluationInput): Evaluation {
     evPerToken: cost > 0 ? ev / cost : 0,
     cost,
     shareOfMarket:
-      redeemableAfter > 0n ? Number(sharesOut) / Number(redeemableAfter) : 1,
-    redeemableSupply: Number(redeemableAfter) / 1e18,
+      supplyAfter > 0n ? Number(sharesOut) / Number(supplyAfter) : 1,
+    redeemableSupply: Number(supplyAfter) / 1e18,
   };
 }
 

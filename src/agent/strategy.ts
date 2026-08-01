@@ -41,6 +41,12 @@ export interface SizingConfig {
   minimumEvPerToken: number;
   /** Minimum confidence required to trade at all. */
   confidenceThreshold: number;
+  /**
+   * Multiplier on reported confidence, from measured calibration. Below 1 when
+   * the ensemble has been shown to be overconfident — this shrinks estimates
+   * harder toward the market, which shrinks position sizes with them.
+   */
+  confidenceScale?: number;
   payoutModel?: PayoutModel;
   /** Assumed probability the market resolves to no winner. */
   failureProbability?: number;
@@ -105,7 +111,11 @@ export async function chooseSize(
   req: SizingRequest,
   config: SizingConfig,
 ): Promise<SizingOutcome> {
-  const { state, outcomeIdx, confidence, minShares, quoteBuy } = req;
+  const { state, outcomeIdx, minShares, quoteBuy } = req;
+  const confidence = Math.min(
+    1,
+    Math.max(0, req.confidence * (config.confidenceScale ?? 1)),
+  );
 
   if (confidence < config.confidenceThreshold) {
     return {

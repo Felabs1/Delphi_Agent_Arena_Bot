@@ -218,7 +218,7 @@ describe("runOnce", () => {
     // model degenerates, so reproduce that: redeemable supply is tiny, which
     // makes every outcome look enormously profitable.
     const port = new FakeDelphi(
-      [market({ id: A, supplies: [1.5, 1.5], creatorSharesPerOutcome: 1 })],
+      [market({ id: A, supplies: [0.05, 0.05] })],
       1000,
     );
     const report = await runOnce(
@@ -241,11 +241,11 @@ describe("runOnce", () => {
   });
 
   it("refuses a market too thin to trade without becoming the market", async () => {
-    // Redeemable supply is 0.01 shares, so even the smallest legal trade would
-    // make us ~50% of the market — the regime that produced 1953 USDC/share
-    // payouts and made both sides of a binary look profitable.
+    // Total supply is 0.02 shares, so even the smallest legal trade makes us a
+    // third of the market — the regime that produced absurd payouts per share
+    // and made both sides of a binary look profitable.
     const port = new FakeDelphi(
-      [market({ id: A, supplies: [1.2, 1.2], creatorSharesPerOutcome: 1.19 })],
+      [market({ id: A, supplies: [0.02, 0.02] })],
       1000,
     );
     const report = await runOnce(

@@ -188,40 +188,48 @@ describe("cost curve", () => {
   });
 });
 
-describe("creator shares are excluded from the redemption denominator", () => {
-  // Measured against every settled testnet market:
-  //   payoutPerShare = pool / (winningSupply - creatorSharesPerOutcome)
-  // fits with 0.0000% error, median AND worst case. Dropping the creator term
-  // understates payout by up to 31% on thin markets — always in the direction
-  // that makes a good trade look bad.
-  it("raises payout above the naive pool/supply figure", () => {
-    const pool = 221_163_800n; // 221.1638 USDC
+describe("payout basis: which pool you pass", () => {
+  // Measured out-of-sample against every settled testnet market (0.0000%
+  // median, 0.0001% worst), predicting from state at the block BEFORE
+  // settlement. Two regimes, same underlying law:
+  //
+  //   open   (pre-settlement, pool still holds the creator's cut):
+  //            payout = pool / totalSupply(winner)
+  //   settled (post-settlement, creator already paid out):
+  //            payout = pool / (totalSupply(winner) - creatorShares)
+  //
+  // Mixing them — a live pool with the creator subtraction — double-counts the
+  // creator. On a market where the creator holds most of the supply that
+  // overstated payout by 37x, which is exactly how a bad trade looks good.
+  it("uses the simple ratio for a live market", () => {
+    // Real numbers from 0xd82af8b4..., pre-settlement.
+    const pool = 224_771_000n;
     const supply = shares(20.7678);
-    const creator = shares(0.3333);
-
-    const naive = toUsdc(payoutPerShare(pool, supply));
-    const exact = toUsdc(payoutPerShare(pool, supply, creator));
-
-    expect(naive).toBeCloseTo(10.6494, 3);
-    expect(exact).toBeCloseTo(10.8231, 3); // matches the realised redemption
-    expect(exact).toBeGreaterThan(naive);
+    expect(toUsdc(payoutPerShare(pool, supply))).toBeCloseTo(10.8231, 3);
   });
 
-  it("matters more the thinner the market", () => {
+  it("uses the creator-adjusted ratio for an already-settled market", () => {
+    // Same market after settlement: pool is net, creator no longer shares.
+    const poolAfter = 221_163_800n;
+    const supply = shares(20.7678);
+    const creator = shares(0.3333);
+    expect(toUsdc(payoutPerShare(poolAfter, supply, creator))).toBeCloseTo(
+      10.8231,
+      3,
+    );
+  });
+
+  it("defaults to the live regime, so trading code cannot double-count", () => {
     const pool = 100_000_000n;
-    const creator = shares(1);
-    const gap = (supplyCount: number) => {
-      const supply = shares(supplyCount);
-      const naive = toUsdc(payoutPerShare(pool, supply));
-      const exact = toUsdc(payoutPerShare(pool, supply, creator));
-      return (exact - naive) / naive;
-    };
-    expect(gap(5)).toBeGreaterThan(gap(500));
+    const supply = shares(50);
+    expect(payoutPerShare(pool, supply)).toBe(
+      payoutPerShare(pool, supply, 0n),
+    );
   });
 
   it("returns zero rather than dividing by a non-positive denominator", () => {
     expect(payoutPerShare(1_000_000n, shares(1), shares(1))).toBe(0n);
-    expect(payoutPerShare(1_000_000n, shares(1), shares(2))).toBe(0n);
+    expect(payoutPerShare(1_000_000n, 0n)).toBe(0n);
   });
 });
 

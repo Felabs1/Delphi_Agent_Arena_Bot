@@ -1,0 +1,67 @@
+# Render Cron deployment.
+#
+# The agent runs one pass and exits, which is exactly the cron-job shape.
+#
+# The disk matters: without persistent storage every tick starts with an empty
+# database, and the drawdown breaker, the daily trade cap and trade idempotency
+# all silently stop working — the agent would happily re-buy the same market
+# every five minutes.
+
+services:
+  - type: cron
+    name: delphi-agent-arena-bot
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter
+
+    # Every 15 minutes. Faster is rarely better here: estimates are cached for
+    # an hour, most markets settle in days, and a tighter loop mostly buys
+    # slippage and rate limits.
+    schedule: "*/15 * * * *"
+
+    dockerCommand: npx tsx src/app.ts --live-ai
+
+    disk:
+      name: delphi-state
+      mountPath: /data
+      sizeGB: 1
+
+    envVars:
+      - key: DATABASE_PATH
+        value: /data/state.db
+      - key: LOG_FORMAT
+        value: json
+      - key: DELPHI_NETWORK
+        value: testnet
+
+      # Secrets — set these in the Render dashboard, never in this file.
+      - key: DELPHI_API_ACCESS_KEY
+        sync: false
+      - key: WALLET_PRIVATE_KEY
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: NEWS_API_KEY
+        sync: false
+
+      # Flip to true to stop trading without redeploying. The agent still runs
+      # and still reports, it just does nothing.
+      - key: KILL_SWITCH
+        value: "false"
+
+      # Thresholds. Replace with values from `npm run calibrate` once enough
+      # markets have settled to measure rather than guess.
+      - key: CONFIDENCE_THRESHOLD
+        value: "0.40"
+      - key: MINIMUM_EDGE
+        value: "0.05"
+      - key: MINIMUM_EV_PER_TOKEN
+        value: "0.03"
+      - key: MAX_TRADES_PER_RUN
+        value: "3"
+      - key: MAX_SHARE_OF_MARKET
+        value: "0.25"
+      - key: MARKET_LIMIT
+        value: "25"
+      - key: EVALUATION_CONCURRENCY
+        value: "6"

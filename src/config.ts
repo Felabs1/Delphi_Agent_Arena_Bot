@@ -110,8 +110,21 @@ const schema = z.object({
   LLM_TIMEOUT_MS: z.coerce.number().int().positive().default(90_000),
   LLM_MAX_RETRIES: z.coerce.number().int().min(0).default(3),
 
+  // --- Data collection --------------------------------------------------
+  /** Optional. Without it the news source is skipped, not fatal. */
+  NEWS_API_KEY: optionalString(z.string().min(1)),
+  /** Turn evidence gathering off entirely (LLM answers from training data). */
+  ENABLE_EVIDENCE: envBool(true),
+  EVIDENCE_TIMEOUT_MS: z.coerce.number().int().positive().default(8000),
+  EVIDENCE_CACHE_MINUTES: z.coerce.number().min(0).default(10),
+
   // --- Decision thresholds ---------------------------------------------
   CONFIDENCE_THRESHOLD: fraction("CONFIDENCE_THRESHOLD").default(0.75),
+  /**
+   * Multiplier applied to reported confidence before sizing. Set below 1 to
+   * correct measured overconfidence — `npm run calibrate` recommends a value.
+   */
+  CONFIDENCE_SCALE: fraction("CONFIDENCE_SCALE").default(1),
   /** Minimum `realEdge` — probability minus breakeven probability. */
   MINIMUM_EDGE: fraction("MINIMUM_EDGE").default(0.08),
   /** Minimum expected profit per USDC staked. */

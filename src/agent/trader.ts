@@ -77,6 +77,8 @@ export interface Candidate {
   correlationKey: string;
   confidence: number;
   reasoning: string;
+  /** The full estimated distribution, kept for calibration scoring. */
+  probabilities: number[];
 }
 
 export interface SkipRecord {
@@ -251,6 +253,7 @@ export async function runOnce(
             correlationKey: key,
             confidence: estimate.confidence,
             reasoning: estimate.reasoning,
+            probabilities: estimate.probabilities,
           });
         }
       } catch (err) {

@@ -18,7 +18,9 @@
     "bridge": "tsx scripts/bridge-eth.ts",
     "live:dry": "tsx src/app.ts --dry-run --live-ai",
     "live:one": "tsx src/app.ts --live-ai --max-trades 1",
-    "live": "tsx src/app.ts --live-ai"
+    "live": "tsx src/app.ts --live-ai",
+    "calibrate": "tsx scripts/calibrate.ts",
+    "status": "tsx scripts/status.ts"
   },
   "repository": {
     "type": "git",

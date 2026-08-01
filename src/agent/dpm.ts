@@ -181,10 +181,25 @@ export function distributablePool(
  * USDC received per winning share, 6-decimal.
  * This is the number the README assumed was always 1.0.
  *
- * `creatorShares` is excluded from the denominator: the market creator holds
- * shares in every outcome and settlement values them separately. Measured
- * against every settled testnet market, this form is exact (0.0000% error);
- * omitting the term understates payout by up to 31% on thin markets.
+ * WHICH POOL YOU PASS MATTERS, and getting it wrong is not a rounding issue:
+ *
+ *   OPEN market (pre-settlement) — `pool` still contains the creator's cut:
+ *       payout = pool / totalSupply(winner)
+ *
+ *   SETTLED market (post-settlement) — `submitWinner` has already paid the
+ *   creator out, and their shares no longer share in the remainder:
+ *       payout = pool / (totalSupply(winner) - creatorSharesPerOutcome)
+ *
+ * Both were measured against every settled testnet market at 0.0000% error,
+ * median and worst case. They are the same law seen before and after the
+ * creator is settled — the creator's take is exactly
+ * `creatorShares x payout`, which is what makes the open-market form collapse
+ * to the simple ratio.
+ *
+ * Trading decisions are always about OPEN markets, so `creatorShares` defaults
+ * to 0. Passing it while also passing a pre-settlement pool double-counts the
+ * creator and inflates payout enormously — on a market where the creator holds
+ * most of the supply it overstated by 37x.
  */
 export function payoutPerShare(
   pool: bigint,

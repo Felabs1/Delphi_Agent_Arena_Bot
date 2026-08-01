@@ -80,9 +80,11 @@ At infinitesimal size `p*` converges to the market's implied probability — the
 Three consequences the naive model misses:
 
 - **Self-dilution.** Buying raises the pool but also your outcome's supply, lowering payout. EV is *concave* in size, so there is an interior optimum a multiplicative sizing rule cannot find.
-- **Creator shares.** The creator holds shares in *every* outcome and is settled separately, so those shares leave the redemption denominator:
-  `payoutPerShare = pool / (winningSupply − creatorSharesPerOutcome)`.
-  Measured against every settled testnet market, this fits with **0.0000% error — median and worst case**. Dropping the term understates payout by up to **31%** on thin markets, always in the direction that makes a good trade look bad.
+- **Which pool you read.** Settlement moves money: `submitWinner` pays the creator out, so a settled market's `pool` means something different from a live one. Two regimes, same law:
+  - **open** (what the agent trades): `payout = pool / totalSupply(winner)`
+  - **settled** (reconstructing history): `payout = pool / (totalSupply(winner) − creatorShares)`
+
+  Verified **out-of-sample** — predicting from state at the block *before* settlement — against every settled testnet market: **0.0000% median, 0.0001% worst**. Mixing the two double-counts the creator and overstated payout by **37x** on a market where the creator held most of the supply.
 - **Locked capital.** DPM stakes are locked until settlement, so candidates are ranked by **EV per USDC per day**, not raw EV.
 
 ---
@@ -302,42 +304,80 @@ Treat every threshold as a starting point — tune against calibration results.
 
 ---
 
-## Development
+## Running it
+
+Everything is driven by plain npm scripts; thresholds live in `.env`.
 
 ```bash
-npm install
-npm test                              # 144 specs, fully offline
-npm run typecheck
-npm run dev                           # full pipeline on the DPM simulator
-npx tsx src/app.ts --fake --dry-run
-npm run smoke:ai                      # live OpenRouter check (free models, $0)
-npm run dev:ai                        # full pipeline, simulated markets + live AI
-
-npm run probe                         # live testnet: verify DPM identities on-chain
-npm run validate:payout               # Stage 3 gate: model vs realised redemptions
+npm run wallet          # balances + exactly what's missing
+npm run live:dry        # full pipeline on real markets, NOTHING signed
+npm run live:one        # sends exactly ONE real trade, then stops
+npm run live            # normal operation (MAX_TRADES_PER_RUN)
+npm run status          # what it has done so far, + live balances
+npm run calibrate       # score past predictions, get threshold advice
 ```
 
-Both live scripts are read-only — no signer, no transactions, no spend.
+Verification and setup:
 
-The test suite is the specification. It runs against `FakeDelphi`, an in-memory market with a **real DPM engine** — buys move the pool and supplies through the same cost curve as the chain, so quotes stay self-consistent, slippage is real, and self-dilution actually happens.
+```bash
+npm test                # 190 specs, fully offline, ~0.5s
+npm run typecheck
+npm run dev             # simulated markets, no network at all
+npm run probe           # re-verify DPM identities against live chain
+npm run validate:payout # the Stage 3 gate, out-of-sample
+npm run smoke:ai        # live OpenRouter check (free models, $0)
 
----
+npm run bridge 0.02     # Sepolia -> Gensyn testnet (needs Sepolia ETH)
+npm run faucet          # mint 1,000 testnet USDC
+```
+
+`probe`, `validate:payout`, `status`, `wallet` and `live:dry` are all read-only — no signer, no transactions, no spend.
+
+### Reading the output
+
+```
+#1 Will the price of Pi Network (PI) token reach $1 by end of 2026?
+    BUY "No"  stake 15.77 USDC  →  35.8847 shares
+    our estimate 80.3% vs market 17.5%  (breakeven 25.0%)
+    if right: 1.73 USDC/share  →  62.13 USDC back   (risking 15.77 USDC)
+    edge 55.3%   expected value 33.65 USDC   confidence 79.4%   settles in 2.4 days
+    https://testnet.delphi.fyi/market/042c4bcf-...
+```
+
+`breakeven` is the probability at which the trade makes exactly zero after
+slippage and fees — the number to compare your own judgement against. A
+`! thin market` warning means the agent would be a large share of tradeable
+supply, where the payout estimate is least reliable.
+
+## Deployment
+
+```bash
+docker build -t delphi-agent .
+docker run --rm -v delphi-state:/data --env-file .env delphi-agent
+```
+
+`render.yaml` deploys it as a Render Cron job on a 15-minute schedule. **Mount a
+persistent disk at `/data`** — without it every tick starts amnesiac and the
+drawdown breaker, daily trade cap and trade idempotency all silently stop
+working. `KILL_SWITCH=true` stops trading without a redeploy.
 
 ## Build Stages
 
 | Stage | Scope | Status |
 |---|---|---|
-| 1 | Skeleton + executable spec, fully offline | ✅ done |
-| 2 | Raw gateway reads + live probe: every DPM identity verified on-chain | ✅ done |
-| 3 | **⚠️ Gate:** payout model validated against realised redemptions | ✅ **PASSED (0.0000% error)** |
-| 4 | OpenRouter ensemble + settlement-judge replication | ✅ done |
-| 5 | Data collection layer | pending |
-| 6 | SQLite persistence, reconciliation, portfolio | pending |
-| 7 | Live execution loop | pending |
-| 8 | Calibration (Brier) + adaptive threshold tuning | pending |
-| 9 | Deployment (Render Cron / Docker) | pending |
+| 1 | Engine + executable spec, fully offline | ✅ |
+| 2 | Live adapter + raw gateway reads | ✅ all DPM identities verified on-chain |
+| 3 | **Gate:** payout model vs realised redemptions | ✅ **0.0001% worst-case, out-of-sample** |
+| 4 | Multi-model ensemble + settlement-judge replica | ✅ free tier, $0/run |
+| 5 | Evidence collection (live prices, news, timing) | ✅ |
+| 6 | SQLite persistence | ✅ journal, cache, drawdown peak, predictions |
+| 7 | Live execution | ✅ trade sent and verified on-chain |
+| 8 | Calibration (Brier, reliability, skill vs market) | ✅ awaiting settled markets to score |
+| 9 | Deployment (Docker + Render Cron) | ✅ |
 
-**Stage 3 is a hard gate.** The payout model is a hypothesis until measured against settled markets; trading on an unvalidated one is the most likely way to lose the competition while appearing to work.
+**Stage 3 is a hard gate**, and it earned its place: the first version of the check read current state and reported 100% error; the second read post-settlement state and fitted a correction that is wrong to apply to a live market. Only predicting from *pre-settlement* state tests what the agent actually does.
+
+**Thresholds are still provisional.** `CONFIDENCE_THRESHOLD=0.40` in `.env` is marked `# PROVISIONAL` — it was chosen to make the agent trade at all, not because it is right. `npm run calibrate` replaces it with a measured value once enough markets have settled, and refuses to advise on fewer than 20 samples rather than fit noise.
 
 ---
 

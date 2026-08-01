@@ -13,12 +13,20 @@ import { randomUUID } from "node:crypto";
 import { assertLiveReady, loadConfig, type Config } from "./config.js";
 import { createLogger, type Logger } from "./utils/logger.js";
 import { present } from "./utils/present.js";
-import { runOnce, type RunReport, type TraderConfig } from "./agent/trader.js";
+import {
+  runOnce,
+  NO_EVIDENCE,
+  type EvidenceProvider,
+  type RunReport,
+  type TraderConfig,
+} from "./agent/trader.js";
 import { MemoryJournal } from "./agent/executor.js";
+import { Store } from "./portfolio/storage.js";
 import { StaticEstimator, type MarketEstimate } from "./ai/estimator.js";
 import { OpenRouterClient } from "./ai/llm.js";
 import { EnsembleEstimator } from "./ai/ensemble.js";
 import { MemoryEstimateCache } from "./ai/cache.js";
+import { EvidenceRegistry } from "./data/registry.js";
 import { FakeDelphi } from "./sdk/fake.js";
 import { LiveDelphi } from "./sdk/delphi.js";
 import type { DelphiPort } from "./sdk/port.js";
@@ -46,6 +54,7 @@ function toTraderConfig(
   config: Config,
   flags: Flags,
   runId: string,
+  persisted?: { peakBankrollUsdc?: number; tradesToday?: number },
 ): TraderConfig {
   const payoutModel = {
     creatorHaircut: config.PAYOUT_CREATOR_HAIRCUT,
@@ -56,6 +65,12 @@ function toTraderConfig(
     marketLimit: config.MARKET_LIMIT,
     maxTradesPerRun: flags.maxTrades ?? config.MAX_TRADES_PER_RUN,
     evaluationConcurrency: config.EVALUATION_CONCURRENCY,
+    ...(persisted?.peakBankrollUsdc !== undefined
+      ? { peakBankrollUsdc: persisted.peakBankrollUsdc }
+      : {}),
+    ...(persisted?.tradesToday !== undefined
+      ? { tradesToday: persisted.tradesToday }
+      : {}),
     dryRun: flags.dryRun,
     sizing: {
       maxPositionFraction: config.MAX_POSITION_SIZE,
@@ -64,6 +79,7 @@ function toTraderConfig(
       minimumEdge: config.MINIMUM_EDGE,
       minimumEvPerToken: config.MINIMUM_EV_PER_TOKEN,
       confidenceThreshold: config.CONFIDENCE_THRESHOLD,
+      confidenceScale: config.CONFIDENCE_SCALE,
       payoutModel,
       failureProbability: config.ASSUMED_FAILURE_PROBABILITY,
     },
@@ -209,6 +225,10 @@ async function main(): Promise<number> {
   const runId = randomUUID();
   const log = createLogger(config.LOG_LEVEL, { runId });
 
+  // Persist everything except pure simulation runs. Without this the drawdown
+  // breaker, the daily trade cap and trade idempotency are all inert.
+  const store = flags.fake ? undefined : new Store(config.DATABASE_PATH);
+
   if (config.KILL_SWITCH) {
     log.warn("KILL_SWITCH is set — doing nothing");
     return 0;
@@ -290,7 +310,7 @@ async function main(): Promise<number> {
       allowPaidFallback: config.ALLOW_PAID_FALLBACK,
       ...(config.JUDGE_MODEL ? { judgeModelOverride: config.JUDGE_MODEL } : {}),
       triageGapThreshold: config.TRIAGE_GAP_THRESHOLD,
-      cache: new MemoryEstimateCache(),
+      cache: store ?? new MemoryEstimateCache(),
       freshness: {
         ttlMinutes: config.ESTIMATE_TTL_MINUTES,
         invalidateOnMove: config.ESTIMATE_INVALIDATE_ON_MOVE,
@@ -309,12 +329,56 @@ async function main(): Promise<number> {
     });
   }
 
+  // Evidence matters more than any of the maths: a threshold question is easy
+  // once you know the current price and near-impossible without it.
+  const evidence: EvidenceProvider = config.ENABLE_EVIDENCE
+    ? new EvidenceRegistry({
+        logger: log,
+        newsApiKey: config.NEWS_API_KEY,
+        timeoutMs: config.EVIDENCE_TIMEOUT_MS,
+        cacheTtlMs: config.EVIDENCE_CACHE_MINUTES * 60_000,
+      })
+    : NO_EVIDENCE;
+
   const result = await runOnce(
     port,
     estimator,
-    new MemoryJournal(),
-    toTraderConfig(config, flags, runId),
+    store ?? new MemoryJournal(),
+    toTraderConfig(config, flags, runId, {
+      ...(store ? { peakBankrollUsdc: store.peakBankroll() } : {}),
+      ...(store ? { tradesToday: store.tradesToday() } : {}),
+    }),
+    evidence,
   );
+
+  if (store) {
+    store.recordBankroll(result.bankrollUsdc);
+    store.recordRun({
+      runId,
+      startedAt: result.startedAt,
+      finishedAt: result.finishedAt,
+      bankrollUsdc: result.bankrollUsdc,
+      cashUsdc: result.cashUsdc,
+      markets: result.marketsFetched,
+      candidates: result.candidates.length,
+      executed: result.executions.filter((e) => e.result.status === "executed")
+        .length,
+      halted: result.halted,
+    });
+    // Store what we believed, so Stage 8 can score it once the market settles.
+    for (const candidate of result.candidates) {
+      store.recordPrediction({
+        runId,
+        market: candidate.market.id,
+        question: candidate.market.metadata?.question ?? null,
+        probabilities: candidate.probabilities,
+        confidence: candidate.confidence,
+        marketProbabilities: candidate.market.spotImpliedProbabilities ?? [],
+        settlesAt: candidate.market.settlesAt,
+      });
+    }
+    store.pruneEstimates(config.ESTIMATE_TTL_MINUTES * 24);
+  }
 
   await report(log, result, flags, port);
   if (client) {
